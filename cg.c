@@ -11,7 +11,7 @@ int main(int argc, char **args) {
     PetscInt    rowStart, rowEnd, rank, size;
     PetscErrorCode ierr;
     PetscBool       flg;
-    PetscLogDouble  t1, t2; 
+    PetscLogDouble  t1, t2;
 
 
     ierr = PetscInitialize(&argc, &args, (char *)0, help);CHKERRQ(ierr);
@@ -38,28 +38,27 @@ int main(int argc, char **args) {
     // [ 4 -1  0 ]
     // [-1  4 -1 ]
     // [ 0 -1  4 ]
-    if (rank == 0) { // Only rank 0 sets the values for this small example.
-        // Row 0
-        i = 0;
-        if (i >= rowStart && i < rowEnd) {
-            j = 0; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-            j = 1; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-        }
-        // Row 1
-        i = 1;
-        if (i >= rowStart && i < rowEnd) {
-            j = 0; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-            j = 1; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-            j = 2; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-        }
-        // Row 2
-        i = 2;
-        if (i >= rowStart && i < rowEnd) {
-            j = 1; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-            j = 2; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
-        }
+
+    // Row 0
+    i = 0;
+    if (i >= rowStart && i < rowEnd) {
+        j = 0; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+        j = 1; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
     }
-    
+    // Row 1
+    i = 1;
+    if (i >= rowStart && i < rowEnd) {
+        j = 0; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+        j = 1; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+        j = 2; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+    }
+    // Row 2
+    i = 2;
+    if (i >= rowStart && i < rowEnd) {
+        j = 1; v = -1.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+        j = 2; v = 4.0; ierr = MatSetValues(A, 1, &i, 1, &j, &v, INSERT_VALUES);CHKERRQ(ierr);
+    }
+
     /* Assemble the matrix */
     ierr = MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
     ierr = MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY);CHKERRQ(ierr);
@@ -84,7 +83,7 @@ int main(int argc, char **args) {
     ierr = MatMult(A, x, b);CHKERRQ(ierr); // b = A*x
 
     ierr = VecView(b, PETSC_VIEWER_STDOUT_WORLD);CHKERRQ(ierr);
-    
+
     /* CG Solver */
 
     ierr = PetscTime(&t1); 	    CHKERRQ(ierr);
