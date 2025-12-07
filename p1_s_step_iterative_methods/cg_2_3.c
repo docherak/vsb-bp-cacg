@@ -115,6 +115,10 @@ int main(int argc, char **args)
     alpha_k = r_k_dot_r_k / (r_k_dot_Ar_k - ((beta_k / alpha_k) * r_k_dot_r_k));
   }
 
+  ierr = PetscTime(&t2);
+  CHKERRQ(ierr);
+  PetscPrintf(PETSC_COMM_WORLD, "\n--- Final Solution Vector (x_k) ---\n");
+  ierr = VecView(x_k, PETSC_VIEWER_STDOUT_WORLD);
   if (rank == 0) {
     if (r_norm <= tol) {
       PetscPrintf(PETSC_COMM_WORLD, "CG converged in %D iterations.\n", iter);
@@ -122,12 +126,7 @@ int main(int argc, char **args)
       PetscPrintf(PETSC_COMM_WORLD, "CG did NOT converge in %D iterations. Final residual norm: %g\n", iter, (double)r_norm);
     }
   }
-
-  ierr = PetscTime(&t2);
-  CHKERRQ(ierr);
-  PetscPrintf(PETSC_COMM_WORLD, "\n--- Final Solution Vector (x_k) ---\n");
   PetscPrintf(PETSC_COMM_WORLD, "Time of solution : %5.3e\n", t2 - t1);
-  ierr = VecView(x_k, PETSC_VIEWER_STDOUT_WORLD);
   CHKERRQ(ierr);
 
   /* --- Cleanup --- */
