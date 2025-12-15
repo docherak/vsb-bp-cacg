@@ -108,8 +108,7 @@ int main(int argc, char **args)
     r_k_pre_dot_r_k_pre = r_k_dot_r_k;
     ierr                = VecDot(r_k, r_k, &r_k_dot_r_k);
     CHKERRQ(ierr);
-    ierr = VecNorm(r_k, NORM_2, &r_norm);
-    CHKERRQ(ierr);
+    r_norm = PetscSqrtScalar(PetscAbsScalar(r_k_dot_r_k));
 
     beta_k  = r_k_dot_r_k / r_k_pre_dot_r_k_pre;
     alpha_k = r_k_dot_r_k / (r_k_dot_Ar_k - ((beta_k / alpha_k) * r_k_dot_r_k));

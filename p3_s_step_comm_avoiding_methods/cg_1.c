@@ -1,3 +1,4 @@
+#include "petscsys.h"
 #include <petscksp.h>
 
 static char help[] = "Solves a linear system by loading a matrix from a file and using a default RHS vector.\n\n";
@@ -46,8 +47,8 @@ int main(int argc, char **args)
   ierr = PetscTime(&t1);
   CHKERRQ(ierr);
 
-  Vec         x_k, r_k, d_k, Ad_k;
-  PetscScalar r_norm, r_k_dot_r_k, r_k1_dot_r_k1, d_k_dot_Ad_k, alpha_k, beta_k;
+  Vec         x_k, r_k, p_k, q_k;
+  PetscScalar r_norm, r0_norm, r_k_dot_r_k, r_k_pre_dot_r_k_pre, r_k_dot_q_k, alpha_k, beta_k;
   PetscInt    max_iter = 100000, iter;
   PetscInt    rank;
   MPI_Comm_rank(PETSC_COMM_WORLD, &rank);
@@ -56,57 +57,79 @@ int main(int argc, char **args)
   CHKERRQ(ierr);
   ierr = VecDuplicate(b, &r_k);
   CHKERRQ(ierr);
-  ierr = VecDuplicate(b, &d_k);
+  ierr = VecDuplicate(b, &p_k);
   CHKERRQ(ierr);
-  ierr = VecDuplicate(b, &Ad_k);
+  ierr = VecDuplicate(b, &q_k);
   CHKERRQ(ierr);
 
   ierr = VecSet(x_k, 0.0);
   CHKERRQ(ierr); // paper: x_0
   ierr = VecCopy(b, r_k);
   CHKERRQ(ierr); // paper: r_0 = f - Ax_0 = b - Ax_0 = b - 0 = b
-  ierr = VecCopy(r_k, d_k);
-  CHKERRQ(ierr); // paper: p_0 = r_0
+
   ierr = VecNorm(r_k, NORM_2, &r_norm);
   CHKERRQ(ierr); // paper: Convergence criteria
 
+  ierr = VecNorm(r_k, NORM_2, &r0_norm);
+  CHKERRQ(ierr);
+
+  if (r0_norm == 0.0) r0_norm = 1.0;
+
   if (rank == 0) { PetscPrintf(PETSC_COMM_WORLD, "\nStarting CG solver with tolerance %g\n", (double)tol); }
 
-  for (iter = 0; iter < max_iter && r_norm > tol; iter++) {
-    ierr = VecDot(r_k, r_k, &r_k_dot_r_k);
-    CHKERRQ(ierr);
-    ierr = MatMult(A, d_k, Ad_k);
-    CHKERRQ(ierr);
-    ierr = VecDot(d_k, Ad_k, &d_k_dot_Ad_k);
-    CHKERRQ(ierr);
-    alpha_k = r_k_dot_r_k / d_k_dot_Ad_k;
-    ierr    = VecAXPY(x_k, alpha_k, d_k);
-    CHKERRQ(ierr);
-    ierr = VecAXPY(r_k, -alpha_k, Ad_k);
-    CHKERRQ(ierr);
-    ierr = VecDot(r_k, r_k, &r_k1_dot_r_k1);
-    CHKERRQ(ierr);
-    r_norm = PetscSqrtScalar(PetscAbsScalar(r_k1_dot_r_k1));
-    beta_k = r_k1_dot_r_k1 / r_k_dot_r_k;
-    ierr   = VecScale(d_k, beta_k);
-    CHKERRQ(ierr);
-    ierr = VecAXPY(d_k, 1.0, r_k);
-    CHKERRQ(ierr);
-  }
-
-  if (rank == 0) {
-    if (r_norm <= tol) {
-      PetscPrintf(PETSC_COMM_WORLD, "CG converged in %D iterations.\n", iter);
+  for (iter = 0; iter < max_iter; iter++) {
+    if (iter == 0) {
+      ierr = VecCopy(r_k, p_k);
+      CHKERRQ(ierr); // paper: p_k = r_k
+      ierr = VecDot(r_k, r_k, &r_k_dot_r_k);
+      CHKERRQ(ierr);
     } else {
-      PetscPrintf(PETSC_COMM_WORLD, "CG did NOT converge in %D iterations. Final residual norm: %g\n", iter, (double)r_norm);
+      // paper: Compute Beta_i
+      r_k_pre_dot_r_k_pre = r_k_dot_r_k;
+      ierr                = VecDot(r_k, r_k, &r_k_dot_r_k);
+      CHKERRQ(ierr);
+      beta_k = r_k_dot_r_k / r_k_pre_dot_r_k_pre;
+      // paper: Compute p_i = r_i + (Beta_i, p_(i-1))
+      ierr = VecScale(p_k, beta_k);
+      CHKERRQ(ierr);
+      ierr = VecAXPY(p_k, 1.0, r_k);
+      CHKERRQ(ierr);
     }
+
+    // paper: Compute q_i = Ap_i
+    ierr = MatMult(A, p_k, q_k);
+    CHKERRQ(ierr);
+
+    // paper: Compute Alpha_i = (r_i, r_i) / (r_i, q_i)
+    ierr = VecDot(r_k, q_k, &r_k_dot_q_k);
+    CHKERRQ(ierr);
+    alpha_k = r_k_dot_r_k / r_k_dot_q_k;
+
+    // paper: Compute x_(i+1)
+    ierr = VecAXPY(x_k, alpha_k, p_k);
+    CHKERRQ(ierr);
+
+    // paper: Compute r_(i+1)
+    ierr = VecAXPY(r_k, -alpha_k, q_k);
+    CHKERRQ(ierr);
+
+    ierr = VecNorm(r_k, NORM_2, &r_norm);
+    CHKERRQ(ierr);
+    if (r_norm / r0_norm < tol) break;
   }
 
   ierr = PetscTime(&t2);
   CHKERRQ(ierr);
   PetscPrintf(PETSC_COMM_WORLD, "\n--- Final Solution Vector (x_k) ---\n");
-  PetscPrintf(PETSC_COMM_WORLD, "Time of solution : %5.3e\n", t2 - t1);
   ierr = VecView(x_k, PETSC_VIEWER_STDOUT_WORLD);
+  if (rank == 0) {
+    if (r_norm / r0_norm <= tol) {
+      PetscPrintf(PETSC_COMM_WORLD, "CG converged in %D iterations.\n", iter);
+    } else {
+      PetscPrintf(PETSC_COMM_WORLD, "CG did NOT converge in %D iterations. Final residual norm: %g\n", iter, (double)r_norm);
+    }
+  }
+  PetscPrintf(PETSC_COMM_WORLD, "Time of solution : %5.3e\n", t2 - t1);
   CHKERRQ(ierr);
 
   /* --- Cleanup --- */
@@ -118,9 +141,9 @@ int main(int argc, char **args)
   CHKERRQ(ierr);
   ierr = VecDestroy(&r_k);
   CHKERRQ(ierr);
-  ierr = VecDestroy(&d_k);
+  ierr = VecDestroy(&q_k);
   CHKERRQ(ierr);
-  ierr = VecDestroy(&Ad_k);
+  ierr = VecDestroy(&p_k);
   CHKERRQ(ierr);
   ierr = PetscFinalize();
   return 0;
