@@ -26,9 +26,10 @@ void ApplyMonomialT(PetscInt s, const PetscScalar *src, PetscScalar *dest)
 
 int main(int argc, char **args)
 {
-  Mat         A;
+  Mat         A, B_mat, G_mat = NULL, G_seq = NULL;
   Vec         b, x, r, p, x_true, e_vec, temp_vec_A;
-  Vec        *B; // Basis vectors [P0..Ps, R0..Rs-1]
+  Vec         y_vec; // Helper vector for reconstruction
+  Vec         v_tmp; // Helper vector for safe column copy
   PetscBool   flg;
   PetscViewer viewer;
   char        file[PETSC_MAX_PATH_LEN];
@@ -39,7 +40,7 @@ int main(int argc, char **args)
   PetscMPIInt rank;
 
   // Scalar loop variables
-  PetscScalar  *G;            // Gram matrix V_l^T*V_l; (2s+1)*(2s+1)
+  PetscScalar  *G;            // Gram matrix buffer
   PetscScalar  *pc, *rc, *xc; // Coordinate vectors - direction, residual, solution
   PetscScalar  *pc_next, *rc_next, *temp_vec;
   PetscScalar   alpha, beta;
@@ -47,6 +48,7 @@ int main(int argc, char **args)
   PetscReal     err_A_norm;
   PetscScalar   err_dot;
   PetscLogEvent event_solve;
+  PetscInt     *indices; // For VecSetValues
 
   PetscFunctionBeginUser;
   PetscCall(PetscInitialize(&argc, &args, (char *)0, help));
@@ -58,6 +60,7 @@ int main(int argc, char **args)
   PetscCall(PetscOptionsGetScalar(NULL, NULL, "-tol", &tol, &flg));
   PetscCall(PetscOptionsGetInt(NULL, NULL, "-s", &s, &flg));
   PetscCall(PetscOptionsGetInt(NULL, NULL, "-max_iter", &max_iter, &flg));
+  dim = 2 * s + 1;
 
   // Load matrix
   PetscCall(PetscViewerBinaryOpen(PETSC_COMM_WORLD, file, FILE_MODE_READ, &viewer));
@@ -84,9 +87,19 @@ int main(int argc, char **args)
   // p_1 := r_1
   PetscCall(VecCopy(r, p));
 
-  // Allocate basis vectors B of size 2s+1, store the combined basis V_l
-  dim = 2 * s + 1;
-  PetscCall(VecDuplicateVecs(b, dim, &B));
+  // Temp vector to avoid double lock on B_mat
+  PetscCall(VecDuplicate(b, &v_tmp));
+
+  // Allocate basis B as a dense matrix
+  PetscInt m_local, M_global;
+  PetscCall(MatGetLocalSize(A, &m_local, NULL));
+  PetscCall(MatGetSize(A, &M_global, NULL));
+
+  // B_mat: m_local rows, dim columns
+  PetscCall(MatCreateDense(PETSC_COMM_WORLD, m_local, PETSC_DECIDE, M_global, dim, NULL, &B_mat));
+
+  // Helper vector 'y_vec' compatible with the columns of B, used to hold coordinate vectors (xc, rc, pc) for reconstruction
+  PetscCall(MatCreateVecs(B_mat, &y_vec, NULL));
 
   // Allocate arrays
   PetscCall(PetscMalloc1(dim * dim, &G));
@@ -96,6 +109,10 @@ int main(int argc, char **args)
   PetscCall(PetscMalloc1(dim, &pc_next));
   PetscCall(PetscMalloc1(dim, &rc_next));
   PetscCall(PetscMalloc1(dim, &temp_vec));
+
+  // Indices 0..dim-1 for VecSetValues
+  PetscCall(PetscMalloc1(dim, &indices));
+  for (i = 0; i < dim; i++) indices[i] = i;
 
   // Calculate b_norm for relative tolerance
   PetscCall(VecNorm(b, NORM_2, &b_norm));
@@ -114,24 +131,75 @@ int main(int argc, char **args)
   PetscInt breakdown = 0;
 
   // Outer loop: for j += s do
-  // Use relative tolerance: r_norm > tol * b_norm
+  // Relative tolerance: r_norm > tol * b_norm
   while (iter < max_iter && r_norm > tol * b_norm) {
-    // Generate basis
-    // P_j := p_j (stored in B[0])
-    PetscCall(VecCopy(p, B[0]));
+    // -----
+    // 1. Generate Basis
+    // -----
+
+    // P_j := p_j (stored in col 0)
+    {
+      Vec col_vec;
+      PetscCall(MatDenseGetColumnVecWrite(B_mat, 0, &col_vec));
+      PetscCall(VecCopy(p, col_vec));
+      PetscCall(MatDenseRestoreColumnVecWrite(B_mat, 0, &col_vec));
+    }
 
     // P_{j+1} := A * P_j (Loop computes P basis)
-    for (i = 0; i < s; i++) { PetscCall(MatMult(A, B[i], B[i + 1])); }
+    for (i = 0; i < s; i++) {
+      Vec p_prev, p_next;
 
-    // R_j := r_j (Stored in B[s+1])
-    PetscCall(VecCopy(r, B[s + 1]));
+      PetscCall(MatDenseGetColumnVecRead(B_mat, i, &p_prev));
+      PetscCall(VecCopy(p_prev, v_tmp));
+      PetscCall(MatDenseRestoreColumnVecRead(B_mat, i, &p_prev));
+
+      PetscCall(MatDenseGetColumnVecWrite(B_mat, i + 1, &p_next));
+      PetscCall(MatMult(A, v_tmp, p_next));
+      PetscCall(MatDenseRestoreColumnVecWrite(B_mat, i + 1, &p_next));
+    }
+
+    // R_j := r_j (Stored in col s+1)
+    {
+      Vec col_vec;
+      PetscCall(MatDenseGetColumnVecWrite(B_mat, s + 1, &col_vec));
+      PetscCall(VecCopy(r, col_vec));
+      PetscCall(MatDenseRestoreColumnVecWrite(B_mat, s + 1, &col_vec));
+    }
 
     // R_{j+k} := A * R_{j+k-1}
-    for (i = 0; i < s - 1; i++) { PetscCall(MatMult(A, B[s + 1 + i], B[s + 1 + i + 1])); }
+    for (i = 0; i < s - 1; i++) {
+      Vec r_prev, r_next;
 
-    // Gram matrix computatio: G := V_l^T * V_l
-    // VecMDot is collective, result stored in G on all ranks.
-    for (i = 0; i < dim; i++) { PetscCall(VecMDot(B[i], dim, B, &G[i * dim])); }
+      PetscCall(MatDenseGetColumnVecRead(B_mat, s + 1 + i, &r_prev));
+      PetscCall(VecCopy(r_prev, v_tmp));
+      PetscCall(MatDenseRestoreColumnVecRead(B_mat, s + 1 + i, &r_prev));
+
+      PetscCall(MatDenseGetColumnVecWrite(B_mat, s + 1 + i + 1, &r_next));
+      PetscCall(MatMult(A, v_tmp, r_next));
+      PetscCall(MatDenseRestoreColumnVecWrite(B_mat, s + 1 + i + 1, &r_next));
+    }
+
+    // -----
+    // 2. Gram Matrix Computation (Optimized)
+    // G = B^T * B
+    // -----
+
+    MatReuse reuse = (G_mat) ? MAT_REUSE_MATRIX : MAT_INITIAL_MATRIX;
+
+    PetscCall(MatTransposeMatMult(B_mat, B_mat, reuse, PETSC_DEFAULT, &G_mat));
+
+    // Gather distributed G_mat to local sequential G_seq on all ranks
+    PetscCall(MatCreateRedundantMatrix(G_mat, 0, PETSC_COMM_SELF, reuse, &G_seq));
+
+    // Copy raw memory directly to G array
+    const PetscScalar *g_ptr;
+    PetscCall(MatDenseGetArrayRead(G_seq, &g_ptr));
+    PetscCall(PetscMemcpy(G, g_ptr, dim * dim * sizeof(PetscScalar)));
+    PetscCall(MatDenseRestoreArrayRead(G_seq, &g_ptr));
+
+    // -----
+    // 3. Scalar Inner Loop
+    // -----
 
     // Initialize coordinate vectors
     // c_1 := e_1
@@ -218,18 +286,28 @@ int main(int argc, char **args)
       break;
     }
 
-    // Reconstruction
+    // -----
+    // 4. Reconstruction
+    // -----
+    // MatMult then performs the reconstruction: x = x + B * xc
 
     // x_{j+s} := x_j + [P, R] * y_{s+1}
-    PetscCall(VecMAXPY(x, dim, xc, B));
+    PetscCall(VecSetValues(y_vec, dim, indices, xc, INSERT_VALUES));
+    PetscCall(VecAssemblyBegin(y_vec));
+    PetscCall(VecAssemblyEnd(y_vec));
+    PetscCall(MatMultAdd(B_mat, y_vec, x, x));
 
     // r_{j+s} := [P, R] * t_{s+1}
-    PetscCall(VecSet(r, 0.0));
-    PetscCall(VecMAXPY(r, dim, rc, B));
+    PetscCall(VecSetValues(y_vec, dim, indices, rc, INSERT_VALUES));
+    PetscCall(VecAssemblyBegin(y_vec));
+    PetscCall(VecAssemblyEnd(y_vec));
+    PetscCall(MatMult(B_mat, y_vec, r));
 
     // p_{j+s} := [P, R] * c_{s+1}
-    PetscCall(VecSet(p, 0.0));
-    PetscCall(VecMAXPY(p, dim, pc, B));
+    PetscCall(VecSetValues(y_vec, dim, indices, pc, INSERT_VALUES));
+    PetscCall(VecAssemblyBegin(y_vec));
+    PetscCall(VecAssemblyEnd(y_vec));
+    PetscCall(MatMult(B_mat, y_vec, p));
 
     // Print progress
     if (rank == 0) PetscPrintf(PETSC_COMM_WORLD, "Iter %d, Resid %g\n", iter, (double)r_norm);
@@ -269,7 +347,12 @@ int main(int argc, char **args)
   }
 
   // Cleanup
-  PetscCall(VecDestroyVecs(dim, &B));
+  PetscCall(MatDestroy(&B_mat));
+  PetscCall(MatDestroy(&G_mat));
+  PetscCall(MatDestroy(&G_seq));
+  PetscCall(VecDestroy(&y_vec));
+  PetscCall(VecDestroy(&v_tmp));
+
   PetscCall(VecDestroy(&x));
   PetscCall(VecDestroy(&b));
   PetscCall(VecDestroy(&r));
@@ -286,6 +369,7 @@ int main(int argc, char **args)
   PetscCall(PetscFree(pc_next));
   PetscCall(PetscFree(rc_next));
   PetscCall(PetscFree(temp_vec));
+  PetscCall(PetscFree(indices));
 
   PetscCall(PetscFinalize());
   return 0;
