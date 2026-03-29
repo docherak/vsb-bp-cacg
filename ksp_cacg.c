@@ -7,6 +7,8 @@
 #include <petsc/private/kspimpl.h>
 #include <petscblaslapack.h>
 
+#define KSPCACG "cacg"
+
 // --------------------------------------------------------
 // GLOBAL LOG EVENTS
 // --------------------------------------------------------
@@ -359,7 +361,7 @@ int main(int argc, char **args)
   PetscLogStage stage_cg, stage_cacg;
 
   PetscCall(PetscInitialize(&argc, &args, NULL, NULL));
-  PetscCall(KSPRegister("cacg", KSPCreate_CACG));
+  PetscCall(KSPRegister(KSPCACG, KSPCreate_CACG));
 
   // --- 1. PRE-LOAD/GENERATE MATRIX ---
   PetscCall(PetscOptionsGetString(NULL, NULL, "-f", file, sizeof(file), &flg));
@@ -447,7 +449,7 @@ int main(int argc, char **args)
 
   PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
   PetscCall(KSPSetOperators(ksp, A, A));
-  PetscCall(KSPSetType(ksp, "cacg"));
+  PetscCall(KSPSetType(ksp, KSPCACG));
   PetscCall(KSPSetFromOptions(ksp));
 
   PetscCall(PetscLogStagePush(stage_cacg));
