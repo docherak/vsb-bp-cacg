@@ -395,14 +395,40 @@ static PetscErrorCode KSPSolve_CACG(KSP ksp)
     PetscCall(VecDestroy(&p_local_wrapper));
     PetscCall(VecRestoreArray(p, &p_ptr));
 
-    // Recompute True Residual r = b - Ax
-    PetscCall(KSP_MatMult(ksp, A, x, r));
-    PetscCall(VecAYPX(r, -1.0, b));
+    // // Recompute True Residual r = b - Ax
+    // PetscCall(KSP_MatMult(ksp, A, x, r));
+    // PetscCall(VecAYPX(r, -1.0, b));
+    //
+
+    {
+      PetscScalar *r_ptr;
+      Vec          r_local_wrapper;
+      PetscInt     m_local_rows;
+
+      // Get local size of the dense basis V to match dimensions
+      PetscCall(MatGetLocalSize(cg->V, &m_local_rows, NULL));
+
+      // Get raw access to the global residual vector 'r'
+      PetscCall(VecGetArray(r, &r_ptr));
+
+      // Create a temporary wrapper to treat the array 'r_ptr' as a local sequential vector
+      // This allows us to use MatMult with the local dense part of V
+      PetscCall(VecCreateSeqWithArray(PETSC_COMM_SELF, 1, m_local_rows, r_ptr, &r_local_wrapper));
+
+      // Compute: r_local = V_local * t_final
+      // Note: cg->r holds the coordinate vector 't' from the inner loop
+      PetscCall(MatMult(V_local, cg->r, r_local_wrapper));
+
+      // Cleanup
+      PetscCall(VecDestroy(&r_local_wrapper));
+      PetscCall(VecRestoreArray(r, &r_ptr));
+    }
 
     PetscCall(VecNorm(r, NORM_2, &r_norm));
     ksp->rnorm = r_norm;
     PetscCall((*ksp->converged)(ksp, ksp->its, r_norm, &ksp->reason, ksp->cnvP));
   }
+  if (!ksp->reason) ksp->reason = KSP_DIVERGED_ITS; 
 
   PetscCall(VecDestroy(&r));
   PetscCall(VecDestroy(&p));
@@ -478,78 +504,103 @@ int main(int argc, char **args)
   PetscReal   norm;
   PetscViewer viewer;
 
+  PetscLogStage stage_cacg;
+
   PetscCall(PetscInitialize(&argc, &args, NULL, NULL));
   PetscCall(KSPRegister("cacg", KSPCreate_CACG));
 
-  // Check if file is provided
+  PetscCall(PetscLogStageRegister("Solve_CACG", &stage_cacg));
+
+  // ------------------------------------------------------------
+  // 1. LOAD / GENERATE MATRIX
+  // ------------------------------------------------------------
   PetscCall(PetscOptionsGetString(NULL, NULL, "-f", file, sizeof(file), &flg));
 
   if (flg) {
-    // A. LOAD MATRIX
     PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Loading matrix from %s...\n", file));
+
     PetscCall(PetscViewerBinaryOpen(PETSC_COMM_WORLD, file, FILE_MODE_READ, &viewer));
     PetscCall(MatCreate(PETSC_COMM_WORLD, &A));
     PetscCall(MatLoad(A, viewer));
     PetscCall(PetscViewerDestroy(&viewer));
 
-    // Create compatible vectors
     PetscCall(MatCreateVecs(A, &x, &b));
     PetscCall(VecDuplicate(x, &u));
+
   } else {
-    // B. GENERATE 1D LAPLACIAN
     PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Generating 1D Laplacian...\n"));
+
     PetscCall(PetscOptionsGetInt(NULL, NULL, "-n", &n, NULL));
-    PetscCall(VecCreate(PETSC_COMM_WORLD, &x));
-    PetscCall(VecSetSizes(x, PETSC_DECIDE, n));
-    PetscCall(VecSetFromOptions(x));
-    PetscCall(VecDuplicate(x, &b));
-    PetscCall(VecDuplicate(x, &u));
 
     PetscCall(MatCreate(PETSC_COMM_WORLD, &A));
     PetscCall(MatSetSizes(A, PETSC_DECIDE, PETSC_DECIDE, n, n));
     PetscCall(MatSetFromOptions(A));
     PetscCall(MatSetUp(A));
-    value[0] = -1.0;
-    value[1] = 2.0;
-    value[2] = -1.0;
-    for (i = 1; i < n - 1; i++) {
-      col[0] = i - 1;
-      col[1] = i;
-      col[2] = i + 1;
-      PetscCall(MatSetValues(A, 1, &i, 3, col, value, INSERT_VALUES));
+
+    PetscCall(MatCreateVecs(A, &x, &b));
+    PetscCall(VecDuplicate(x, &u));
+
+    PetscInt rstart, rend;
+    PetscCall(MatGetOwnershipRange(A, &rstart, &rend));
+
+    for (i = rstart; i < rend; i++) {
+      if (i == 0) {
+        col[0]   = 0;
+        col[1]   = 1;
+        value[0] = 2.0;
+        value[1] = -1.0;
+        PetscCall(MatSetValues(A, 1, &i, 2, col, value, INSERT_VALUES));
+      } else if (i == n - 1) {
+        col[0]   = n - 2;
+        col[1]   = n - 1;
+        value[0] = -1.0;
+        value[1] = 2.0;
+        PetscCall(MatSetValues(A, 1, &i, 2, col, value, INSERT_VALUES));
+      } else {
+        col[0]   = i - 1;
+        col[1]   = i;
+        col[2]   = i + 1;
+        value[0] = -1.0;
+        value[1] = 2.0;
+        value[2] = -1.0;
+        PetscCall(MatSetValues(A, 1, &i, 3, col, value, INSERT_VALUES));
+      }
     }
-    i      = n - 1;
-    col[0] = n - 2;
-    col[1] = n - 1;
-    PetscCall(MatSetValues(A, 1, &i, 2, col, value, INSERT_VALUES));
-    i        = 0;
-    col[0]   = 0;
-    col[1]   = 1;
-    value[0] = 2.0;
-    value[1] = -1.0;
-    PetscCall(MatSetValues(A, 1, &i, 2, col, value, INSERT_VALUES));
+
     PetscCall(MatAssemblyBegin(A, MAT_FINAL_ASSEMBLY));
     PetscCall(MatAssemblyEnd(A, MAT_FINAL_ASSEMBLY));
   }
 
-  // Setup Test: Known Solution u = 1
+  // ------------------------------------------------------------
+  // 2. PROBLEM PREPARATION
+  // ------------------------------------------------------------
   PetscCall(VecSet(u, 1.0));
   PetscCall(MatMult(A, u, b));
 
-  // Solve
+  // ------------------------------------------------------------
+  // 3. SOLVE
+  // ------------------------------------------------------------
+  PetscCall(PetscPrintf(PETSC_COMM_WORLD, "\n>>> STARTING CACG <<<\n"));
+
+  PetscCall(VecSet(x, 0.0));
+
   PetscCall(KSPCreate(PETSC_COMM_WORLD, &ksp));
   PetscCall(KSPSetOperators(ksp, A, A));
   PetscCall(KSPSetType(ksp, "cacg"));
   PetscCall(KSPSetFromOptions(ksp));
 
-  PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Solving...\n"));
+  PetscCall(PetscLogStagePush(stage_cacg));
   PetscCall(KSPSolve(ksp, b, x));
+  PetscCall(PetscLogStagePop());
 
-  // Check Error
+  // ------------------------------------------------------------
+  // 4. ERROR CHECK
+  // ------------------------------------------------------------
   PetscCall(VecAXPY(x, -1.0, u));
   PetscCall(VecNorm(x, NORM_2, &norm));
   PetscCall(KSPGetIterationNumber(ksp, &i));
-  PetscCall(PetscPrintf(PETSC_COMM_WORLD, "Iterations %D, Error Norm %g\n", i, (double)norm));
+
+  PetscCall(PetscPrintf(PETSC_COMM_WORLD, "CACG RESULT: Iters %" PetscInt_FMT ", Err %g\n", i, (double)norm));
 
   // Cleanup
   PetscCall(KSPDestroy(&ksp));
