@@ -246,13 +246,6 @@ static PetscErrorCode KSPSolve_CACG(KSP ksp)
       // 5. p = r + beta * p
       for (int k = 0; k < dim; k++) ptr_p[k] = ptr_r[k] + beta * ptr_p[k];
 
-      r_norm = PetscSqrtReal(PetscRealPart(delta_new));
-      PetscCall(KSPMonitor(ksp, ksp->its, r_norm));
-
-      if (r_norm < ksp->rtol) {
-        ksp->reason = KSP_CONVERGED_RTOL;
-        break;
-      }
     }
 
     // Restore pointers
@@ -298,6 +291,7 @@ static PetscErrorCode KSPSolve_CACG(KSP ksp)
 
     PetscCall(VecNorm(r, NORM_2, &r_norm));
     ksp->rnorm = r_norm;
+    PetscCall(KSPMonitor(ksp, ksp->its, r_norm));
     if (!ksp->reason) { PetscCall((*ksp->converged)(ksp, ksp->its, r_norm, &ksp->reason, ksp->cnvP)); }
   }
 
