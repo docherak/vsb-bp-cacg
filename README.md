@@ -7,19 +7,7 @@ It contains:
 - custom PETSc implementations of various versions of (standard) conjugate gradient (CG) method written as part of a the research phase (`p<N>_<paper_name>` folders);
 - custom naive implementations of the $s$-step method (`iterations` folder);
 - custom more optimized implementation of $s$-step CACG as [KSP solver](https://petsc.org/main/manual/ksp/), labelled `KSPCACG` (`ksp_cacg.c` file in root);
-- (TODO) packaged results from numerical experiments in [LUMI-C](https://docs.lumi-supercomputer.eu/hardware/lumic/) HPC environment.
+- [packaged results](https://github.com/docherak/vsb-bp-cacg/releases/tag/LUMI-C-experiments) from numerical experiments in [LUMI-C](https://docs.lumi-supercomputer.eu/hardware/lumic/) HPC environment.
 
 
 Final code is formatted using `.clang-format` file provided by [PETSc GitLab](https://gitlab.com/petsc/petsc) repository.
-
-## OLD:
-compile with:
-```
-mpicc <filename>.c -o cg $(pkg-config --cflags --libs PETSc)
-```
-
-run with:
-```
-mpirun -n 1 --oversubscribe cg
-```
-
